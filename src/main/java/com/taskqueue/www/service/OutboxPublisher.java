@@ -16,15 +16,13 @@ public class OutboxPublisher {
     private final OutboxRepository outboxRepository;
     private final KafkaProducerService producer;
 
-    @Scheduled(fixedRate = 5000) // every 5 seconds
+    @Scheduled(fixedRate = 5000)
     public void publishOutboxEvents() {
 
         List<OutboxEvent> events = outboxRepository.findByStatus("NEW");
 
         for (OutboxEvent event : events) {
-            producer.sendTask(event.getPayload());
-            event.setStatus("SENT");
-            outboxRepository.save(event);
+            producer.sendTask(event);   // pass full event
         }
     }
 }
