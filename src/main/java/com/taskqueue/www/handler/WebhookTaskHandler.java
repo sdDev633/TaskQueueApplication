@@ -15,7 +15,7 @@ import org.springframework.web.client.RestTemplate;
 public class WebhookTaskHandler implements TaskHandler {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate;
 
     @Override
     public String getType() {
