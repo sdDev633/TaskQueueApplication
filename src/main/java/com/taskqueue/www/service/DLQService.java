@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 
 @Slf4j
@@ -59,14 +60,9 @@ public class DLQService {
             }
             dlqRepository.save(dlq);
 
-            // Get or create task
-            Task task;
-            if (dlq.getOriginalTaskId() != null) {
-                task = taskRepository.findById(dlq.getOriginalTaskId())
-                        .orElse(createNewTask(dlq.getPayload()));
-            } else {
-                task = createNewTask(dlq.getPayload());
-            }
+            // ALWAYS use the updated DLQ payload (not old task)
+            // This ensures any payload updates are used in the retry
+            Task task = createNewTask(dlq.getPayload());
 
             // Reset task for retry
             task.setStatus("PENDING");
@@ -112,6 +108,89 @@ public class DLQService {
             return true;
         }
         return false;
+    }
+
+    @Transactional
+    public Optional<DLQResponseDTO> updatePayload(Long dlqId, UpdatePayloadRequestDTO request) {
+        return dlqRepository.findById(dlqId).map(dlq -> {
+            // Update the payload
+            dlq.setPayload(request.getPayload());
+
+            // Add resolution note
+            String resolutionNote = request.getResolution() != null
+                    ? request.getResolution()
+                    : "Payload updated";
+            dlq.setResolution(resolutionNote);
+
+            DeadLetterQueue saved = dlqRepository.save(dlq);
+
+            log.info("DLQ item {} payload updated", dlqId);
+
+            return mapToDTO(saved);
+        });
+    }
+
+    @Transactional
+    public BulkRetryResponseDTO retryAllFailed(RetryRequestDTO request) {
+        return retryByStatus("FAILED", request);
+    }
+
+    @Transactional
+    public BulkRetryResponseDTO retryByStatus(String status, RetryRequestDTO request) {
+        List<DeadLetterQueue> dlqItems = dlqRepository.findAll().stream()
+                .filter(dlq -> status.equalsIgnoreCase(dlq.getStatus()))
+                .toList();
+
+        int totalRetried = 0;
+        int successful = 0;
+        int failed = 0;
+
+        for (DeadLetterQueue dlq : dlqItems) {
+            try {
+                totalRetried++;
+
+                // Update DLQ status
+                dlq.setStatus("RETRYING");
+                if (request != null && request.getResolution() != null) {
+                    dlq.setResolution(request.getResolution());
+                }
+                dlqRepository.save(dlq);
+
+                // ALWAYS use the updated DLQ payload (not old task)
+                Task task = createNewTask(dlq.getPayload());
+
+                // Reset task for retry
+                task.setStatus("PENDING");
+                task.setRetryCount(0);
+                task.setErrorMessage(null);
+                Task savedTask = taskRepository.save(task);
+
+                // Create outbox event for retry
+                ObjectNode node = objectMapper.createObjectNode();
+                node.put("taskId", savedTask.getId());
+                node.put("payload", savedTask.getPayload());
+
+                OutboxEvent event = new OutboxEvent();
+                event.setPayload(node.toString());
+                event.setStatus("NEW");
+                event.setCreatedAt(LocalDateTime.now());
+                outboxRepository.save(event);
+
+                successful++;
+                log.info("DLQ item {} retried successfully as task {}", dlq.getId(), savedTask.getId());
+
+            } catch (Exception e) {
+                failed++;
+                log.error("Failed to retry DLQ item {}: {}", dlq.getId(), e.getMessage());
+            }
+        }
+
+        String message = String.format("Bulk retry completed: %d total, %d successful, %d failed",
+                totalRetried, successful, failed);
+
+        log.info(message);
+
+        return new BulkRetryResponseDTO(totalRetried, successful, failed, message);
     }
 
     // Helper methods

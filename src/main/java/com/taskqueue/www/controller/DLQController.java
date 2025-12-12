@@ -87,4 +87,32 @@ public class DLQController {
         }
         return ResponseEntity.notFound().build();
     }
+
+    @PutMapping("/{id}/update-payload")
+    public ResponseEntity<ApiResponse<DLQResponseDTO>> updatePayload(
+            @PathVariable Long id,
+            @RequestBody UpdatePayloadRequestDTO request) {
+
+        return dlqService.updatePayload(id, request)
+                .map(dlq -> ResponseEntity.ok(
+                        ApiResponse.success("Payload updated successfully", dlq)))
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PutMapping("/retry-all")
+    public ResponseEntity<ApiResponse<BulkRetryResponseDTO>> retryAllFailed(
+            @RequestBody(required = false) RetryRequestDTO request) {
+
+        BulkRetryResponseDTO result = dlqService.retryAllFailed(request);
+        return ResponseEntity.ok(ApiResponse.success(result));
+    }
+
+    @PutMapping("/retry-all/status/{status}")
+    public ResponseEntity<ApiResponse<BulkRetryResponseDTO>> retryByStatus(
+            @PathVariable String status,
+            @RequestBody(required = false) RetryRequestDTO request) {
+
+        BulkRetryResponseDTO result = dlqService.retryByStatus(status, request);
+        return ResponseEntity.ok(ApiResponse.success(result));
+    }
 }
