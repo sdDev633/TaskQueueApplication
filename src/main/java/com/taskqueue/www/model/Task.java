@@ -1,10 +1,9 @@
 package com.taskqueue.www.model;
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
+import jakarta.persistence.*;
 import lombok.Data;
+
+import java.time.LocalDateTime;
 
 @Entity
 @Data
@@ -16,5 +15,23 @@ public class Task {
 
     private String payload;
 
-    private String status;
+    private String status; // PENDING, PROCESSING, DONE, FAILED, CANCELLED
+
+    private Integer retryCount = 0;
+
+    private Integer maxRetries = 3;
+
+    @Column(length = 1000)
+    private String errorMessage;
+
+    private LocalDateTime lastAttemptAt;
+
+    private LocalDateTime createdAt = LocalDateTime.now();
+
+    private LocalDateTime updatedAt = LocalDateTime.now();
+
+    @PreUpdate
+    public void preUpdate() {
+        this.updatedAt = LocalDateTime.now();
+    }
 }
