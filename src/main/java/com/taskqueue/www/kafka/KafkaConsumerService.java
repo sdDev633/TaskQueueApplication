@@ -85,6 +85,9 @@ public class KafkaConsumerService {
                 task.setErrorMessage(null);
                 taskRepository.save(task);
 
+                // If this task was retried from DLQ, mark DLQ as resolved
+                updateDLQStatusIfRetried(taskId);
+
                 log.info("Task {} completed successfully", taskId);
 
             } catch (Exception handlerException) {
@@ -171,6 +174,29 @@ public class KafkaConsumerService {
 
         } catch (Exception e) {
             log.error("Failed to move task {} to DLQ: {}", task.getId(), e.getMessage());
+        }
+    }
+
+    private void updateDLQStatusIfRetried(Long taskId) {
+        try {
+            taskRepository.findById(taskId).ifPresent(task -> {
+                // Check if this task was retried from DLQ
+                if (task.getRetriedFromDlqId() != null) {
+                    dlqRepository.findById(task.getRetriedFromDlqId()).ifPresent(dlq -> {
+                        dlq.setStatus("RESOLVED");
+                        String resolution = dlq.getResolution() != null
+                                ? dlq.getResolution() + " - Retry successful"
+                                : "Retry successful";
+                        dlq.setResolution(resolution);
+                        dlqRepository.save(dlq);
+
+                        log.info("DLQ item {} marked as RESOLVED after successful retry (task {})",
+                                dlq.getId(), taskId);
+                    });
+                }
+            });
+        } catch (Exception e) {
+            log.error("Failed to update DLQ status after successful retry: {}", e.getMessage());
         }
     }
 }

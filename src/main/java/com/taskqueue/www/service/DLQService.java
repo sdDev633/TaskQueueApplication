@@ -63,6 +63,7 @@ public class DLQService {
             // ALWAYS use the updated DLQ payload (not old task)
             // This ensures any payload updates are used in the retry
             Task task = createNewTask(dlq.getPayload());
+            task.setRetriedFromDlqId(dlqId); // Track which DLQ this came from
 
             // Reset task for retry
             task.setStatus("PENDING");
@@ -158,6 +159,7 @@ public class DLQService {
 
                 // ALWAYS use the updated DLQ payload (not old task)
                 Task task = createNewTask(dlq.getPayload());
+                task.setRetriedFromDlqId(dlq.getId()); // Track which DLQ this came from
 
                 // Reset task for retry
                 task.setStatus("PENDING");

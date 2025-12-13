@@ -30,6 +30,8 @@ public class Task {
 
     private LocalDateTime updatedAt = LocalDateTime.now();
 
+    private Long retriedFromDlqId; // Track if this task was retried from DLQ
+
     @PreUpdate
     public void preUpdate() {
         this.updatedAt = LocalDateTime.now();
