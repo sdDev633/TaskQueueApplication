@@ -12,6 +12,9 @@ import com.itextpdf.layout.properties.TextAlignment;
 import com.itextpdf.kernel.colors.ColorConstants;
 import com.itextpdf.kernel.font.PdfFont;
 import com.itextpdf.kernel.font.PdfFontFactory;
+import com.taskqueue.www.model.GeneratedDocument;
+import com.taskqueue.www.repository.GeneratedDocumentRepository;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -23,9 +26,13 @@ import java.time.format.DateTimeFormatter;
 
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class PdfTaskHandler implements TaskHandler {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+//    private final PdfStorageService storageService;
+    private final GeneratedDocumentRepository documentRepository;
+
     private static final String OUTPUT_DIR = "output/pdfs/";
 
     @Override
@@ -38,6 +45,7 @@ public class PdfTaskHandler implements TaskHandler {
         JsonNode json = objectMapper.readTree(data);
         String template = json.get("template").asText();
         JsonNode documentData = json.get("data");
+        Long taskId = json.has("taskId") ? json.get("taskId").asLong() : null;
 
         log.info("Generating PDF with template: {}", template);
 
@@ -66,6 +74,31 @@ public class PdfTaskHandler implements TaskHandler {
 
         log.info("PDF generated successfully: {}", filename);
         log.info("File size: {} KB", new File(filename).length() / 1024);
+
+        // NEW: Save document metadata to database
+        saveDocumentMetadata(taskId, filename, template, new File(filename));
+    }
+
+    private void saveDocumentMetadata(Long taskId, String filename, String template, File pdfFile) {
+        try {
+            GeneratedDocument document = new GeneratedDocument();
+            document.setTaskId(taskId);
+            document.setFilename(pdfFile.getName());
+            document.setDocumentType(template);
+            document.setStorageType("LOCAL");
+            document.setStoragePath(pdfFile.getAbsolutePath());
+            document.setFileSizeBytes(pdfFile.length());
+            document.setMimeType("application/pdf");
+            document.setCreatedAt(LocalDateTime.now());
+
+            documentRepository.save(document);
+
+            log.info("Document metadata saved for task {}: {}", taskId, pdfFile.getName());
+
+        } catch (Exception e) {
+            log.error("Failed to save document metadata for task {}", taskId, e);
+            // Don't throw - PDF is generated, just metadata tracking failed
+        }
     }
 
     private void generateInvoice(String filename, JsonNode data) throws Exception {
