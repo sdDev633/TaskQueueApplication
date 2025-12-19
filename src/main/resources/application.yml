@@ -8,6 +8,21 @@ spring:
       ddl-auto: update
     show-sql: true
 
+  mail:
+    host: smtp.gmail.com
+    port: 587
+    username: shrijitd11@gmail.com
+    password: nsublilytzbveltr
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+          connectiontimeout: 5000
+          timeout: 5000
+          writetimeout: 5000
+
 kafka:
   bootstrap-servers: localhost:9092
   topic: task-topic
