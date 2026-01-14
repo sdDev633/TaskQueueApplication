@@ -43,6 +43,7 @@ public class TaskService {
         node.put("payload", saved.getPayload());
 
         OutboxEvent event = new OutboxEvent();
+        event.setTaskId(saved.getId());   // ✅ FIX
         event.setPayload(node.toString());
         event.setStatus("NEW");
         event.setCreatedAt(LocalDateTime.now());
@@ -52,12 +53,10 @@ public class TaskService {
     }
 
     public Page<TaskResponseDTO> getAllTasks(Pageable pageable) {
-        Page<Task> tasks = taskRepository.findAll(pageable);
-        return tasks.map(task -> {
-            OutboxEvent outbox = findOutboxForTask(task.getId());
-            return mapToDTO(task, outbox);
-        });
+        return taskRepository.findAll(pageable)
+                .map(task -> mapToDTO(task, findOutboxForTask(task.getId())));
     }
+
 
     public Optional<TaskResponseDTO> getTaskById(Long id) {
         return taskRepository.findById(id)
@@ -73,12 +72,10 @@ public class TaskService {
     }
 
     public Page<TaskResponseDTO> getTasksByStatus(String status, Pageable pageable) {
-        Page<Task> tasks = taskRepository.findByStatus(status, pageable);
-        return tasks.map(task -> {
-            OutboxEvent outbox = findOutboxForTask(task.getId());
-            return mapToDTO(task, outbox);
-        });
+        return taskRepository.findByStatus(status, pageable)
+                .map(task -> mapToDTO(task, findOutboxForTask(task.getId())));
     }
+
 
     public TaskStatsDTO getStats() {
         long total = taskRepository.count();
@@ -106,28 +103,31 @@ public class TaskService {
 
     @Transactional
     public Optional<TaskResponseDTO> retryTask(Long id) {
-        return taskRepository.findById(id)
-                .map(task -> {
-                    if ("FAILED".equals(task.getStatus()) || "CANCELLED".equals(task.getStatus())) {
-                        task.setStatus("PENDING");
-                        Task saved = taskRepository.save(task);
+        return taskRepository.findById(id).map(task -> {
 
-                        // Create new outbox event for retry
-                        ObjectNode node = objectMapper.createObjectNode();
-                        node.put("taskId", saved.getId());
-                        node.put("payload", saved.getPayload());
+            if (!"FAILED".equals(task.getStatus()) && !"CANCELLED".equals(task.getStatus())) {
+                return mapToDTO(task, findOutboxForTask(task.getId()));
+            }
 
-                        OutboxEvent event = new OutboxEvent();
-                        event.setPayload(node.toString());
-                        event.setStatus("NEW");
-                        event.setCreatedAt(LocalDateTime.now());
-                        OutboxEvent savedEvent = outboxRepository.save(event);
+            task.setStatus("PENDING");
+            Task savedTask = taskRepository.save(task);
 
-                        return mapToDTO(saved, savedEvent);
-                    }
-                    return mapToDTO(task, findOutboxForTask(task.getId()));
-                });
+            ObjectNode node = objectMapper.createObjectNode();
+            node.put("taskId", savedTask.getId());
+            node.put("payload", savedTask.getPayload());
+
+            OutboxEvent event = new OutboxEvent();
+            event.setTaskId(savedTask.getId());   // ✅ FIX
+            event.setPayload(node.toString());
+            event.setStatus("NEW");
+            event.setCreatedAt(LocalDateTime.now());
+
+            OutboxEvent savedEvent = outboxRepository.save(event);
+
+            return mapToDTO(savedTask, savedEvent);
+        });
     }
+
 
     @Transactional
     public boolean deleteTask(Long id) {
@@ -140,13 +140,11 @@ public class TaskService {
 
     // Helper methods
     private OutboxEvent findOutboxForTask(Long taskId) {
-        // Find the most recent outbox event for this task
-        String searchPattern = "\"taskId\":" + taskId;
-        return outboxRepository.findAll().stream()
-                .filter(e -> e.getPayload().contains(searchPattern))
-                .findFirst()
+        return outboxRepository
+                .findTopByTaskIdOrderByCreatedAtDesc(taskId)
                 .orElse(null);
     }
+
 
     private TaskResponseDTO mapToDTO(Task task, OutboxEvent outbox) {
         TaskResponseDTO dto = new TaskResponseDTO();

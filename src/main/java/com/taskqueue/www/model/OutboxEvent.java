@@ -1,24 +1,31 @@
 package com.taskqueue.www.model;
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
+import jakarta.persistence.*;
 import lombok.Data;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.time.LocalDateTime;
 
 @Entity
 @Data
+@Getter
+@Setter
 public class OutboxEvent {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(name = "task_id")
+    private Long taskId;   // ✅ ADD THIS
+
+    @Column(columnDefinition = "TEXT", nullable = false)
     private String payload;
 
-    private String status; // NEW, SENT
+    @Column(nullable = false)
+    private String status;
 
-    private LocalDateTime createdAt = LocalDateTime.now();
+    @Column(nullable = false)
+    private LocalDateTime createdAt;
 }
