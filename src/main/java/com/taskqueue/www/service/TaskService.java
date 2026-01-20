@@ -6,7 +6,9 @@ import com.taskqueue.www.dto.OutboxStatusDTO;
 import com.taskqueue.www.dto.TaskCreateRequestDTO;
 import com.taskqueue.www.dto.TaskResponseDTO;
 import com.taskqueue.www.dto.TaskStatsDTO;
-import com.taskqueue.www.kafka.KafkaProducerService;
+import com.taskqueue.www.security.CustomUserDetails;
+import com.taskqueue.www.security.SecurityUtils;
+import org.springframework.security.core.context.SecurityContextHolder;
 import com.taskqueue.www.model.OutboxEvent;
 import com.taskqueue.www.model.Task;
 import com.taskqueue.www.repository.OutboxRepository;
@@ -29,136 +31,163 @@ public class TaskService {
     private final OutboxRepository outboxRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    @Transactional
+    /* ================= CREATE ================= */
+
     public TaskResponseDTO createTask(TaskCreateRequestDTO request) {
-        // Step 1: Save task
+
         Task task = new Task();
         task.setPayload(request.getPayload());
         task.setStatus("PENDING");
+        task.setUserId(SecurityUtils.currentUserId());
+
         Task saved = taskRepository.save(task);
-
-        // Step 2: Save to outbox table
-        ObjectNode node = objectMapper.createObjectNode();
-        node.put("taskId", saved.getId());
-        node.put("payload", saved.getPayload());
-
-        OutboxEvent event = new OutboxEvent();
-        event.setTaskId(saved.getId());   // ✅ FIX
-        event.setPayload(node.toString());
-        event.setStatus("NEW");
-        event.setCreatedAt(LocalDateTime.now());
-        OutboxEvent savedEvent = outboxRepository.save(event);
+        OutboxEvent savedEvent = outboxRepository.save(createOutbox(saved));
 
         return mapToDTO(saved, savedEvent);
     }
 
+    /* ================= READ ================= */
+
     public Page<TaskResponseDTO> getAllTasks(Pageable pageable) {
-        return taskRepository.findAll(pageable)
-                .map(task -> mapToDTO(task, findOutboxForTask(task.getId())));
+
+        Page<Task> page = SecurityUtils.isAdmin()
+                ? taskRepository.findAll(pageable)
+                : taskRepository.findByUserId(SecurityUtils.currentUserId(), pageable);
+
+        return page.map(t -> mapToDTO(t, findOutboxForTask(t.getId())));
     }
 
-
     public Optional<TaskResponseDTO> getTaskById(Long id) {
-        return taskRepository.findById(id)
-                .map(task -> {
-                    OutboxEvent outbox = findOutboxForTask(task.getId());
-                    return mapToDTO(task, outbox);
-                });
+
+        Optional<Task> task = SecurityUtils.isAdmin()
+                ? taskRepository.findById(id)
+                : taskRepository.findByIdAndUserId(id, SecurityUtils.currentUserId());
+
+        return task.map(t -> mapToDTO(t, findOutboxForTask(t.getId())));
     }
 
     public Optional<String> getTaskStatus(Long id) {
-        return taskRepository.findById(id)
-                .map(Task::getStatus);
+
+        Optional<Task> task = SecurityUtils.isAdmin()
+                ? taskRepository.findById(id)
+                : taskRepository.findByIdAndUserId(id, SecurityUtils.currentUserId());
+
+        return task.map(Task::getStatus);
     }
 
     public Page<TaskResponseDTO> getTasksByStatus(String status, Pageable pageable) {
-        return taskRepository.findByStatus(status, pageable)
-                .map(task -> mapToDTO(task, findOutboxForTask(task.getId())));
-    }
 
+        Page<Task> page = SecurityUtils.isAdmin()
+                ? taskRepository.findByStatus(status, pageable)
+                : taskRepository.findByStatusAndUserId(
+                status, SecurityUtils.currentUserId(), pageable);
+
+        return page.map(t -> mapToDTO(t, findOutboxForTask(t.getId())));
+    }
 
     public TaskStatsDTO getStats() {
-        long total = taskRepository.count();
-        long pending = taskRepository.countByStatus("PENDING");
-        long processing = taskRepository.countByStatus("PROCESSING");
-        long done = taskRepository.countByStatus("DONE");
-        long failed = taskRepository.countByStatus("FAILED");
 
-        return new TaskStatsDTO(total, pending, processing, done, failed);
+        if (SecurityUtils.isAdmin()) {
+            return new TaskStatsDTO(
+                    taskRepository.count(),
+                    taskRepository.countByStatus("PENDING"),
+                    taskRepository.countByStatus("PROCESSING"),
+                    taskRepository.countByStatus("DONE"),
+                    taskRepository.countByStatus("FAILED")
+            );
+        }
+
+        Long uid = SecurityUtils.currentUserId();
+        return new TaskStatsDTO(
+                taskRepository.countByUserId(uid),
+                taskRepository.countByStatusAndUserId("PENDING", uid),
+                taskRepository.countByStatusAndUserId("PROCESSING", uid),
+                taskRepository.countByStatusAndUserId("DONE", uid),
+                taskRepository.countByStatusAndUserId("FAILED", uid)
+        );
     }
+
+    /* ================= MUTATIONS ================= */
 
     @Transactional
     public Optional<TaskResponseDTO> cancelTask(Long id) {
-        return taskRepository.findById(id)
-                .map(task -> {
-                    if ("PENDING".equals(task.getStatus()) || "PROCESSING".equals(task.getStatus())) {
-                        task.setStatus("CANCELLED");
-                        Task saved = taskRepository.save(task);
-                        OutboxEvent outbox = findOutboxForTask(saved.getId());
-                        return mapToDTO(saved, outbox);
-                    }
-                    return mapToDTO(task, findOutboxForTask(task.getId()));
-                });
+
+        return findAuthorizedTask(id).map(task -> {
+            if ("PENDING".equals(task.getStatus()) || "PROCESSING".equals(task.getStatus())) {
+                task.setStatus("CANCELLED");
+                taskRepository.save(task);
+            }
+            return mapToDTO(task, findOutboxForTask(task.getId()));
+        });
     }
 
     @Transactional
     public Optional<TaskResponseDTO> retryTask(Long id) {
-        return taskRepository.findById(id).map(task -> {
+
+        return findAuthorizedTask(id).map(task -> {
 
             if (!"FAILED".equals(task.getStatus()) && !"CANCELLED".equals(task.getStatus())) {
                 return mapToDTO(task, findOutboxForTask(task.getId()));
             }
 
             task.setStatus("PENDING");
-            Task savedTask = taskRepository.save(task);
+            Task saved = taskRepository.save(task);
 
-            ObjectNode node = objectMapper.createObjectNode();
-            node.put("taskId", savedTask.getId());
-            node.put("payload", savedTask.getPayload());
-
-            OutboxEvent event = new OutboxEvent();
-            event.setTaskId(savedTask.getId());   // ✅ FIX
-            event.setPayload(node.toString());
-            event.setStatus("NEW");
-            event.setCreatedAt(LocalDateTime.now());
-
-            OutboxEvent savedEvent = outboxRepository.save(event);
-
-            return mapToDTO(savedTask, savedEvent);
+            OutboxEvent event = outboxRepository.save(createOutbox(saved));
+            return mapToDTO(saved, event);
         });
     }
 
-
     @Transactional
     public boolean deleteTask(Long id) {
-        if (taskRepository.existsById(id)) {
-            taskRepository.deleteById(id);
+
+        return findAuthorizedTask(id).map(t -> {
+            taskRepository.delete(t);
             return true;
-        }
-        return false;
+        }).orElse(false);
     }
 
-    // Helper methods
+    /* ================= INTERNAL ================= */
+
+    private Optional<Task> findAuthorizedTask(Long id) {
+        return SecurityUtils.isAdmin()
+                ? taskRepository.findById(id)
+                : taskRepository.findByIdAndUserId(id, SecurityUtils.currentUserId());
+    }
+
+    private OutboxEvent createOutbox(Task task) {
+
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("taskId", task.getId());
+        node.put("payload", task.getPayload());
+
+        OutboxEvent event = new OutboxEvent();
+        event.setTaskId(task.getId());
+        event.setPayload(node.toString());
+        event.setStatus("NEW");
+        event.setCreatedAt(LocalDateTime.now());
+        return event;
+    }
+
     private OutboxEvent findOutboxForTask(Long taskId) {
         return outboxRepository
                 .findTopByTaskIdOrderByCreatedAtDesc(taskId)
                 .orElse(null);
     }
 
-
     private TaskResponseDTO mapToDTO(Task task, OutboxEvent outbox) {
+
         TaskResponseDTO dto = new TaskResponseDTO();
         dto.setId(task.getId());
         dto.setPayload(task.getPayload());
         dto.setStatus(task.getStatus());
 
         if (outbox != null) {
-            OutboxStatusDTO outboxStatus = new OutboxStatusDTO();
-            outboxStatus.setStatus(outbox.getStatus());
-            outboxStatus.setCreatedAt(outbox.getCreatedAt());
-            dto.setOutboxStatus(outboxStatus);
+            OutboxStatusDTO o = new OutboxStatusDTO();
+            o.setStatus(outbox.getStatus());
+            o.setCreatedAt(outbox.getCreatedAt());
+            dto.setOutboxStatus(o);
         }
-
         return dto;
     }
 }

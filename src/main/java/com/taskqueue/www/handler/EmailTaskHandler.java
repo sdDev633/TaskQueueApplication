@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.mail.internet.MimeMessage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.mail.MailException;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Component;
@@ -31,7 +32,6 @@ public class EmailTaskHandler implements TaskHandler {
 
         JsonNode json = objectMapper.readTree(data);
 
-        // REQUIRED
         List<String> to = readList(json, "to");
         if (to.isEmpty()) {
             throw new IllegalArgumentException("EMAIL task must contain at least one recipient");
@@ -40,17 +40,13 @@ public class EmailTaskHandler implements TaskHandler {
         String subject = json.get("subject").asText();
         String body = json.get("body").asText();
 
-        // OPTIONAL
         String from = json.has("from")
                 ? json.get("from").asText()
                 : "Local Task Engine <yourgmail@gmail.com>";
 
         boolean html = json.has("html") && json.get("html").asBoolean();
 
-        log.info("EMAIL task → to={}, subject={}", to, subject);
-
         MimeMessage message = mailSender.createMimeMessage();
-
         MimeMessageHelper helper =
                 new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
 
@@ -59,9 +55,12 @@ public class EmailTaskHandler implements TaskHandler {
         helper.setSubject(subject);
         helper.setText(body, html);
 
-        mailSender.send(message);
-
-        log.info("EMAIL sent successfully → {}", to);
+        try {
+            mailSender.send(message);
+        } catch (MailException ex) {
+            log.error("EMAIL SEND FAILED → {}", to, ex);
+            throw ex; // IMPORTANT → task will be marked FAILED
+        }
     }
 
     private List<String> readList(JsonNode json, String field) {

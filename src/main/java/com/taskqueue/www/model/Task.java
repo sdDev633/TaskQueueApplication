@@ -13,6 +13,8 @@ public class Task {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    private Long userId;
+
     private String payload;
 
     private String status; // PENDING, PROCESSING, DONE, FAILED, CANCELLED

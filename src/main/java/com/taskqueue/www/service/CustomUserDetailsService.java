@@ -2,6 +2,7 @@ package com.taskqueue.www.service;
 
 import com.taskqueue.www.model.UserModel;
 import com.taskqueue.www.repository.UserRepository;
+import com.taskqueue.www.security.CustomUserDetails;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -24,11 +25,13 @@ public class CustomUserDetailsService implements UserDetailsService {
         UserModel user = userRepo.findByUsername(username)
                 .orElseThrow(() -> new UsernameNotFoundException("User not found"));
 
-        return new org.springframework.security.core.userdetails.User(
+        return new CustomUserDetails(
+                user.getId(),
                 user.getUsername(),
                 user.getPassword(),
-                List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().name()))
+                user.getRole()
         );
-
     }
 }
+
+

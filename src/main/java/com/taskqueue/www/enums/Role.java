@@ -1,5 +1,6 @@
 package com.taskqueue.www.enums;
 
 public enum Role {
-    ADMIN
+    ADMIN,
+    USER
 }

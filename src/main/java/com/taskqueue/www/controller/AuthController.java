@@ -6,10 +6,12 @@ import com.taskqueue.www.enums.Role;
 import com.taskqueue.www.jwt.JwtUtil;
 import com.taskqueue.www.model.UserModel;
 import com.taskqueue.www.repository.UserRepository;
+import com.taskqueue.www.security.CustomUserDetails;
 import com.taskqueue.www.service.CustomUserDetailsService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -35,7 +37,7 @@ public class AuthController {
         UserModel user = new UserModel();
         user.setUsername(req.getUsername());
         user.setPassword(encoder.encode(req.getPassword()));
-        user.setRole(Role.ADMIN); // or USER
+        user.setRole(Role.USER); // or USER
 
         userRepo.save(user);
     }
@@ -43,14 +45,15 @@ public class AuthController {
     @PostMapping("/login")
     public Map<String, String> login(@RequestBody LoginRequest req) {
 
-        authManager.authenticate(
+        Authentication auth = authManager.authenticate(
                 new UsernamePasswordAuthenticationToken(
-                        req.getUsername(),
-                        req.getPassword()
+                        req.getUsername(), req.getPassword()
                 )
         );
 
-        String token = jwtUtil.generateToken(req.getUsername());
+        CustomUserDetails user = (CustomUserDetails) auth.getPrincipal();
+        String token = jwtUtil.generateToken(user);
+
         return Map.of("token", token);
     }
 }
