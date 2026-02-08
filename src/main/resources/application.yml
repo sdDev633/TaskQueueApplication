@@ -12,7 +12,7 @@ spring:
     host: smtp.gmail.com
     port: 587
     username: shrijitd11@gmail.com
-    password: nsublilytzbveltr
+    password: mfnakyrcncapmgaq
     properties:
       mail:
         smtp:
@@ -26,3 +26,17 @@ spring:
 kafka:
   bootstrap-servers: localhost:9092
   topic: task-topic
+
+server:
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: always
+
+logging:
+  level:
+    root: INFO
+    org.springframework.web: DEBUG
+    org.springframework.kafka: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql: TRACE

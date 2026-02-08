@@ -1,11 +1,11 @@
 package com.taskqueue.www.controller;
 
-import com.taskqueue.www.dto.ApiResponse;
-import com.taskqueue.www.dto.TaskCreateRequestDTO;
-import com.taskqueue.www.dto.TaskResponseDTO;
-import com.taskqueue.www.dto.TaskStatsDTO;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.taskqueue.www.dto.*;
 import com.taskqueue.www.enums.Role;
 import com.taskqueue.www.model.Task;
+import com.taskqueue.www.repository.TaskRepository;
 import com.taskqueue.www.security.CustomUserDetails;
 import com.taskqueue.www.service.TaskService;
 import lombok.RequiredArgsConstructor;
@@ -14,24 +14,50 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
 
-@PreAuthorize("hasAnyRole('USER','ADMIN')")
+
 @RestController
 @RequestMapping("/api/tasks")
 @RequiredArgsConstructor
 public class TaskController {
 
     private final TaskService taskService;
+    private final TaskRepository taskRepository;
+    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final ObjectMapper objectMapper;
 
     @PostMapping
-    public ResponseEntity<ApiResponse<TaskResponseDTO>> createTask(
-            @RequestBody TaskCreateRequestDTO request) {
-        return ResponseEntity.ok(
-                ApiResponse.success("Task created and queued",
-                        taskService.createTask(request)));
+    public ResponseEntity<?> createTask(@RequestBody TaskCreateRequest request) {
+
+        // Build unified payload
+        ObjectNode payload = objectMapper.createObjectNode();
+        payload.put("type", request.getType());
+        payload.set("data", request.getData());
+        if (request.getMeta() != null) payload.set("meta", request.getMeta());
+
+        // Save task
+        Task task = new Task();
+        task.setStatus("PENDING");
+        task.setRetryCount(0);
+        task.setPayload(payload.toString());
+        taskRepository.save(task);
+
+        // Kafka message
+        ObjectNode kafkaMsg = objectMapper.createObjectNode();
+        kafkaMsg.put("taskId", task.getId());
+        kafkaMsg.set("payload", payload);
+
+        kafkaTemplate.send("task-topic", kafkaMsg.toString());
+
+        return ResponseEntity.ok(Map.of(
+                "taskId", task.getId(),
+                "status", "QUEUED"
+        ));
     }
 
     @GetMapping

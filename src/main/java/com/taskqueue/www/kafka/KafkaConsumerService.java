@@ -29,174 +29,116 @@ public class KafkaConsumerService {
     private final TaskHandlerRegistry handlerRegistry;
     private final DeadLetterQueueRepository dlqRepository;
     private final KafkaTemplate<String, String> kafkaTemplate;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
 
     @KafkaListener(topics = "task-topic", groupId = "task-group")
     @Transactional
     public void consume(ConsumerRecord<String, String> record) {
-        Long taskId = null;
+
+        Long taskId = null;   // ✅ visible everywhere
+
         try {
-            String message = record.value();
-            JsonNode node = objectMapper.readTree(message);
-            taskId = node.get("taskId").asLong();
-            String payload = node.has("payload") ? node.get("payload").asText() : null;
+            JsonNode msg = objectMapper.readTree(record.value());
 
-            Optional<Task> opt = taskRepository.findById(taskId);
-            if (opt.isEmpty()) {
-                log.error("No task record found for id={}", taskId);
-                return;
-            }
+            taskId = msg.get("taskId").asLong();
+            final Long finalTaskId = taskId;   // ✅ lambda-safe copy
 
-            Task task = opt.get();
+            JsonNode payloadNode = msg.get("payload");
 
-            // Idempotency: if already DONE, skip
+            Task task = taskRepository.findById(finalTaskId)
+                    .orElseThrow(() -> new RuntimeException("Task not found: " + finalTaskId));
+
             if ("DONE".equalsIgnoreCase(task.getStatus())) {
-                log.info("Task {} already DONE — skipping", taskId);
+                log.info("Task {} already DONE", finalTaskId);
                 return;
             }
 
-            // Mark as processing
             task.setStatus("PROCESSING");
             task.setLastAttemptAt(LocalDateTime.now());
             taskRepository.save(task);
 
-            // Parse the actual task payload
-            JsonNode taskPayload = objectMapper.readTree(payload);
-            String taskType = taskPayload.has("type")
-                    ? taskPayload.get("type").asText()
-                    : "DEFAULT";
+            String type = payloadNode.get("type").asText();
+            JsonNode dataNode = payloadNode.get("data");
 
-            log.info("Processing taskId={} type={} attempt={}",
-                    taskId, taskType, task.getRetryCount() + 1);
-
-            try {
-                // Route to appropriate handler
-                TaskHandler handler = handlerRegistry.getHandler(taskType);
-                if (handler != null) {
-                    handler.handle(taskPayload.toString());
-                } else {
-                    log.warn("No handler found for task type: {}. Using default processing.", taskType);
-                    Thread.sleep(2000); // Simulate work
-                    log.info("Default processing completed for: {}", payload);
-                }
-
-                // Success! Mark as done
-                task.setStatus("DONE");
-                task.setErrorMessage(null);
-                taskRepository.save(task);
-
-                // If this task was retried from DLQ, mark DLQ as resolved
-                updateDLQStatusIfRetried(taskId);
-
-                log.info("Task {} completed successfully", taskId);
-
-            } catch (Exception handlerException) {
-                // Handler failed - initiate retry logic
-                handleTaskFailure(task, handlerException, message);
+            TaskHandler handler = handlerRegistry.getHandler(type);
+            if (handler == null) {
+                throw new RuntimeException("No handler registered for type: " + type);
             }
 
-        } catch (Exception e) {
-            log.error("Critical error processing Kafka message for taskId={}: {}",
-                    taskId, e.getMessage(), e);
+            handler.handle(dataNode.toString());
 
-            // Try to mark task as failed if we have the taskId
+            task.setStatus("DONE");
+            task.setErrorMessage(null);
+            taskRepository.save(task);
+
+            updateDLQStatusIfRetried(finalTaskId);
+
+            log.info("Task {} executed successfully [{}]", finalTaskId, type);
+
+        } catch (Exception e) {
+
+            log.error("Task execution failed for taskId={}", taskId, e);
+
             if (taskId != null) {
-                taskRepository.findById(taskId).ifPresent(task -> {
-                    task.setStatus("FAILED");
-                    task.setErrorMessage("Critical error: " + e.getMessage());
-                    taskRepository.save(task);
-                    moveToDLQ(task, e);
-                });
+                final Long finalTaskId = taskId;   // ✅ lambda-safe again
+
+                taskRepository.findById(finalTaskId).ifPresent(task ->
+                        handleTaskFailure(task, e, record.value())
+                );
             }
         }
     }
 
+
     private void handleTaskFailure(Task task, Exception exception, String originalMessage) {
+
         task.setRetryCount(task.getRetryCount() + 1);
         task.setErrorMessage(exception.getMessage());
         task.setLastAttemptAt(LocalDateTime.now());
 
-        log.error("Task {} failed on attempt {}: {}",
-                task.getId(), task.getRetryCount(), exception.getMessage());
+        if (task.getRetryCount() <= task.getMaxRetries()) {
 
-        if (RetryConfig.shouldRetry(task.getRetryCount())) {
-            // Schedule retry with exponential backoff
             task.setStatus("PENDING");
             taskRepository.save(task);
 
-            long delayMs = RetryConfig.calculateBackoffDelay(task.getRetryCount());
-            log.info("Scheduling retry {} for task {} in {}ms",
-                    task.getRetryCount(), task.getId(), delayMs);
+            long delay = RetryConfig.calculateBackoffDelay(task.getRetryCount());
 
-            scheduleRetry(originalMessage, delayMs);
+            new Thread(() -> {
+                try {
+                    Thread.sleep(delay);
+                    kafkaTemplate.send("task-topic", originalMessage);
+                } catch (Exception e) {
+                    log.error("Retry failed", e);
+                }
+            }).start();
 
         } else {
-            // Max retries exceeded - move to DLQ
             task.setStatus("FAILED");
             taskRepository.save(task);
-
-            log.error("Task {} failed permanently after {} attempts. Moving to DLQ.",
-                    task.getId(), task.getRetryCount());
-
             moveToDLQ(task, exception);
         }
     }
 
-    private void scheduleRetry(String message, long delayMs) {
-        // Schedule retry by re-publishing to Kafka after delay
-        // In production, use Kafka scheduled messages or a scheduler service
-        new Thread(() -> {
-            try {
-                Thread.sleep(delayMs);
-                kafkaTemplate.send("task-topic", message);
-                log.info("Retry message re-published to Kafka");
-            } catch (InterruptedException e) {
-                log.error("Retry scheduling interrupted", e);
-                Thread.currentThread().interrupt();
-            }
-        }).start();
-    }
-
     private void moveToDLQ(Task task, Exception exception) {
-        try {
-            DeadLetterQueue dlq = new DeadLetterQueue();
-            dlq.setOriginalTaskId(task.getId());
-            dlq.setPayload(task.getPayload());
-            dlq.setTotalAttempts(task.getRetryCount());
-            dlq.setLastError(exception.getMessage());
-            dlq.setFailedAt(LocalDateTime.now());
-            dlq.setStatus("FAILED");
-
-            dlqRepository.save(dlq);
-
-            log.info("Task {} moved to Dead Letter Queue (DLQ ID: {})",
-                    task.getId(), dlq.getId());
-
-        } catch (Exception e) {
-            log.error("Failed to move task {} to DLQ: {}", task.getId(), e.getMessage());
-        }
+        DeadLetterQueue dlq = new DeadLetterQueue();
+        dlq.setOriginalTaskId(task.getId());
+        dlq.setPayload(task.getPayload());
+        dlq.setTotalAttempts(task.getRetryCount());
+        dlq.setLastError(exception.getMessage());
+        dlq.setFailedAt(LocalDateTime.now());
+        dlq.setStatus("FAILED");
+        dlqRepository.save(dlq);
     }
 
     private void updateDLQStatusIfRetried(Long taskId) {
-        try {
-            taskRepository.findById(taskId).ifPresent(task -> {
-                // Check if this task was retried from DLQ
-                if (task.getRetriedFromDlqId() != null) {
-                    dlqRepository.findById(task.getRetriedFromDlqId()).ifPresent(dlq -> {
-                        dlq.setStatus("RESOLVED");
-                        String resolution = dlq.getResolution() != null
-                                ? dlq.getResolution() + " - Retry successful"
-                                : "Retry successful";
-                        dlq.setResolution(resolution);
-                        dlqRepository.save(dlq);
-
-                        log.info("DLQ item {} marked as RESOLVED after successful retry (task {})",
-                                dlq.getId(), taskId);
-                    });
-                }
-            });
-        } catch (Exception e) {
-            log.error("Failed to update DLQ status after successful retry: {}", e.getMessage());
-        }
+        taskRepository.findById(taskId).ifPresent(task -> {
+            if (task.getRetriedFromDlqId() != null) {
+                dlqRepository.findById(task.getRetriedFromDlqId()).ifPresent(dlq -> {
+                    dlq.setStatus("RESOLVED");
+                    dlq.setResolution("Retry successful");
+                    dlqRepository.save(dlq);
+                });
+            }
+        });
     }
 }
