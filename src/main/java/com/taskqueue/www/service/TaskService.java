@@ -1,11 +1,9 @@
 package com.taskqueue.www.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.taskqueue.www.dto.OutboxStatusDTO;
-import com.taskqueue.www.dto.TaskCreateRequestDTO;
-import com.taskqueue.www.dto.TaskResponseDTO;
-import com.taskqueue.www.dto.TaskStatsDTO;
+import com.taskqueue.www.dto.*;
 import com.taskqueue.www.security.CustomUserDetails;
 import com.taskqueue.www.security.SecurityUtils;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -31,22 +29,36 @@ public class TaskService {
     private final OutboxRepository outboxRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    /* ================= CREATE ================= */
+    @Transactional
+    public TaskResponseDTO createTask(TaskCreateRequest request) {
 
-    public TaskResponseDTO createTask(TaskCreateRequestDTO request) {
+        try {
 
-        Task task = new Task();
-        task.setPayload(request.getPayload());
-        task.setStatus("PENDING");
-        task.setUserId(SecurityUtils.currentUserId());
+            // build JSON payload exactly how consumer expects
+            ObjectNode payloadNode = objectMapper.createObjectNode();
+            payloadNode.put("type", request.getType());
+            payloadNode.set("data", request.getData());
 
-        Task saved = taskRepository.save(task);
-        OutboxEvent savedEvent = outboxRepository.save(createOutbox(saved));
+            if (request.getMeta() != null) {
+                payloadNode.set("meta", request.getMeta());
+            }
 
-        return mapToDTO(saved, savedEvent);
+            Task task = new Task();
+            task.setPayload(objectMapper.writeValueAsString(payloadNode));
+            task.setStatus("PENDING");
+            task.setUserId(SecurityUtils.currentUserId());
+
+            Task savedTask = taskRepository.save(task);
+
+            OutboxEvent outboxEvent = outboxRepository.save(createOutbox(savedTask));
+
+            return mapToDTO(savedTask, outboxEvent);
+
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create task", e);
+        }
     }
 
-    /* ================= READ ================= */
 
     public Page<TaskResponseDTO> getAllTasks(Pageable pageable) {
 
@@ -107,8 +119,6 @@ public class TaskService {
         );
     }
 
-    /* ================= MUTATIONS ================= */
-
     @Transactional
     public Optional<TaskResponseDTO> cancelTask(Long id) {
 
@@ -157,17 +167,27 @@ public class TaskService {
 
     private OutboxEvent createOutbox(Task task) {
 
-        ObjectNode node = objectMapper.createObjectNode();
-        node.put("taskId", task.getId());
-        node.put("payload", task.getPayload());
+        try {
 
-        OutboxEvent event = new OutboxEvent();
-        event.setTaskId(task.getId());
-        event.setPayload(node.toString());
-        event.setStatus("NEW");
-        event.setCreatedAt(LocalDateTime.now());
-        return event;
+            JsonNode payloadNode = objectMapper.readTree(task.getPayload());
+
+            ObjectNode eventNode = objectMapper.createObjectNode();
+            eventNode.put("taskId", task.getId());
+            eventNode.set("payload", payloadNode);
+
+            OutboxEvent event = new OutboxEvent();
+            event.setTaskId(task.getId());
+            event.setPayload(objectMapper.writeValueAsString(eventNode));
+            event.setStatus("NEW");
+            event.setCreatedAt(LocalDateTime.now());
+
+            return event;
+
+        } catch (Exception e) {
+            throw new RuntimeException("Outbox creation failed", e);
+        }
     }
+
 
     private OutboxEvent findOutboxForTask(Long taskId) {
         return outboxRepository

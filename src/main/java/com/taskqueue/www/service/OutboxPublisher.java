@@ -6,6 +6,7 @@ import com.taskqueue.www.repository.OutboxRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -17,12 +18,19 @@ public class OutboxPublisher {
     private final KafkaProducerService producer;
 
     @Scheduled(fixedRate = 5000)
+    @Transactional
     public void publishOutboxEvents() {
 
-        List<OutboxEvent> events = outboxRepository.findByStatus("NEW");
+        List<OutboxEvent> events =
+                outboxRepository.findTop50ByStatusOrderByCreatedAtAsc("NEW");
 
         for (OutboxEvent event : events) {
-            producer.sendTask(event);   // pass full event
+            event.setStatus("PROCESSING");
         }
+
+        outboxRepository.saveAll(events);
+
+        events.forEach(producer::sendTask);
     }
 }
+

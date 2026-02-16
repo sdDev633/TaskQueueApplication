@@ -35,21 +35,23 @@ public class KafkaConsumerService {
     @Transactional
     public void consume(ConsumerRecord<String, String> record) {
 
-        Long taskId = null;   // ✅ visible everywhere
+        log.info("KAFKA MESSAGE RECEIVED: {}", record.value());
 
         try {
+
             JsonNode msg = objectMapper.readTree(record.value());
 
-            taskId = msg.get("taskId").asLong();
-            final Long finalTaskId = taskId;   // ✅ lambda-safe copy
-
+            Long taskId = msg.get("taskId").asLong();
             JsonNode payloadNode = msg.get("payload");
 
-            Task task = taskRepository.findById(finalTaskId)
-                    .orElseThrow(() -> new RuntimeException("Task not found: " + finalTaskId));
+            String type = payloadNode.get("type").asText();
 
-            if ("DONE".equalsIgnoreCase(task.getStatus())) {
-                log.info("Task {} already DONE", finalTaskId);
+            Task task = taskRepository.findById(taskId)
+                    .orElseThrow(() -> new RuntimeException("Task not found: " + taskId));
+
+            // ✅ idempotency guards
+            if ("DONE".equalsIgnoreCase(task.getStatus())
+                    || "CANCELLED".equalsIgnoreCase(task.getStatus())) {
                 return;
             }
 
@@ -57,40 +59,44 @@ public class KafkaConsumerService {
             task.setLastAttemptAt(LocalDateTime.now());
             taskRepository.save(task);
 
-            String type = payloadNode.get("type").asText();
-            JsonNode dataNode = payloadNode.get("data");
-
             TaskHandler handler = handlerRegistry.getHandler(type);
+
             if (handler == null) {
-                throw new RuntimeException("No handler registered for type: " + type);
+                throw new RuntimeException("No handler for type: " + type);
             }
 
-            handler.handle(dataNode.toString());
+            // ✅ pass ONLY payload
+            handler.handle(payloadNode.toString());
 
             task.setStatus("DONE");
             task.setErrorMessage(null);
             taskRepository.save(task);
 
-            updateDLQStatusIfRetried(finalTaskId);
+            updateDLQStatusIfRetried(taskId);
 
-            log.info("Task {} executed successfully [{}]", finalTaskId, type);
+            log.info("TASK COMPLETED SUCCESSFULLY: {}", taskId);
 
         } catch (Exception e) {
 
-            log.error("Task execution failed for taskId={}", taskId, e);
+            log.error("TASK EXECUTION FAILED. RAW MESSAGE={}", record.value(), e);
 
-            if (taskId != null) {
-                final Long finalTaskId = taskId;   // ✅ lambda-safe again
+            try {
+                JsonNode msg = objectMapper.readTree(record.value());
+                Long taskId = msg.get("taskId").asLong();
 
-                taskRepository.findById(finalTaskId).ifPresent(task ->
-                        handleTaskFailure(task, e, record.value())
-                );
+                taskRepository.findById(taskId)
+                        .ifPresent(task -> handleTaskFailure(task, e, record.value()));
+
+            } catch (Exception ex) {
+                log.error("CRITICAL FAILURE HANDLER ERROR", ex);
             }
         }
     }
 
-
     private void handleTaskFailure(Task task, Exception exception, String originalMessage) {
+
+        log.warn("HANDLING FAILURE: taskId={}, attempt={}",
+                task.getId(), task.getRetryCount() + 1);
 
         task.setRetryCount(task.getRetryCount() + 1);
         task.setErrorMessage(exception.getMessage());
@@ -108,11 +114,12 @@ public class KafkaConsumerService {
                     Thread.sleep(delay);
                     kafkaTemplate.send("task-topic", originalMessage);
                 } catch (Exception e) {
-                    log.error("Retry failed", e);
+                    log.error("RETRY FAILED: taskId={}", task.getId(), e);
                 }
             }).start();
 
         } else {
+
             task.setStatus("FAILED");
             taskRepository.save(task);
             moveToDLQ(task, exception);
@@ -120,6 +127,7 @@ public class KafkaConsumerService {
     }
 
     private void moveToDLQ(Task task, Exception exception) {
+
         DeadLetterQueue dlq = new DeadLetterQueue();
         dlq.setOriginalTaskId(task.getId());
         dlq.setPayload(task.getPayload());
@@ -127,12 +135,15 @@ public class KafkaConsumerService {
         dlq.setLastError(exception.getMessage());
         dlq.setFailedAt(LocalDateTime.now());
         dlq.setStatus("FAILED");
+
         dlqRepository.save(dlq);
     }
 
     private void updateDLQStatusIfRetried(Long taskId) {
+
         taskRepository.findById(taskId).ifPresent(task -> {
             if (task.getRetriedFromDlqId() != null) {
+
                 dlqRepository.findById(task.getRetriedFromDlqId()).ifPresent(dlq -> {
                     dlq.setStatus("RESOLVED");
                     dlq.setResolution("Retry successful");

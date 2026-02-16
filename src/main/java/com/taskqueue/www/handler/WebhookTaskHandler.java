@@ -14,7 +14,7 @@ import org.springframework.web.client.RestTemplate;
 @RequiredArgsConstructor
 public class WebhookTaskHandler implements TaskHandler {
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
 
     @Override
@@ -23,21 +23,29 @@ public class WebhookTaskHandler implements TaskHandler {
     }
 
     @Override
-    public void handle(String data) throws Exception {
-        JsonNode json = objectMapper.readTree(data);
-        String url = json.get("url").asText();
-        String method = json.has("method") ? json.get("method").asText() : "POST";
-        JsonNode payload = json.has("data") ? json.get("data") : null;
+    public void handle(String message) throws Exception {
 
-        log.info("Calling webhook: {} {}", method, url);
+        JsonNode root = objectMapper.readTree(message);
+        JsonNode json = root.path("data");
+
+        String url = json.path("url").asText(null);
+
+        if (url == null || url.isBlank()) {
+            throw new IllegalArgumentException("WEBHOOK → url is required");
+        }
+
+        String method = json.path("method").asText("POST").toUpperCase();
+
+        JsonNode payloadNode = json.path("data");
+
+        String payload = payloadNode.isMissingNode() || payloadNode.isNull()
+                ? null
+                : payloadNode.toString();
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
 
-        HttpEntity<String> entity = new HttpEntity<>(
-                payload != null ? payload.toString() : null,
-                headers
-        );
+        HttpEntity<String> entity = new HttpEntity<>(payload, headers);
 
         ResponseEntity<String> response = restTemplate.exchange(
                 url,
@@ -46,6 +54,6 @@ public class WebhookTaskHandler implements TaskHandler {
                 String.class
         );
 
-        log.info("Webhook response: {} - {}", response.getStatusCode(), response.getBody());
+        log.info("WEBHOOK SUCCESS → status={}", response.getStatusCode());
     }
 }

@@ -5,6 +5,7 @@ import com.taskqueue.www.dto.ApiResponse;
 import com.taskqueue.www.model.GeneratedDocument;
 import com.taskqueue.www.repository.GeneratedDocumentRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.data.domain.Page;
@@ -25,6 +26,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/documents")
 @RequiredArgsConstructor
+@Slf4j
 public class DocumentController {
 
     private final GeneratedDocumentRepository documentRepository;
@@ -71,25 +73,40 @@ public class DocumentController {
 
     @GetMapping("/stats")
     public ResponseEntity<ApiResponse<Map<String, Object>>> getDocumentStats() {
+
+        log.info("DOCUMENT STATS REQUEST");
+
         Map<String, Object> stats = new HashMap<>();
         stats.put("total", documentRepository.count());
         stats.put("invoices", documentRepository.countByDocumentType("invoice"));
         stats.put("receipts", documentRepository.countByDocumentType("receipt"));
         stats.put("reports", documentRepository.countByDocumentType("report"));
 
+        log.info("DOCUMENT STATS GENERATED: {}", stats);
+
         return ResponseEntity.ok(ApiResponse.success(stats));
     }
 
+
     @GetMapping("/download/{id}")
     public ResponseEntity<Resource> downloadDocument(@PathVariable Long id) {
+
+        log.info("PDF DOWNLOAD REQUEST | docId={}", id);
+
         return documentRepository.findById(id)
                 .map(doc -> {
                     File file = new File(doc.getStoragePath());
+
+                    log.info("RESOLVED FILE PATH | path={}", doc.getStoragePath());
+
                     if (!file.exists()) {
+                        log.error("FILE NOT FOUND ON DISK | path={}", doc.getStoragePath());
                         return ResponseEntity.notFound().<Resource>build();
                     }
 
                     Resource resource = new FileSystemResource(file);
+
+                    log.info("PDF READY FOR DOWNLOAD | filename={}", doc.getFilename());
 
                     return ResponseEntity.ok()
                             .contentType(MediaType.APPLICATION_PDF)
@@ -97,8 +114,12 @@ public class DocumentController {
                                     "attachment; filename=\"" + doc.getFilename() + "\"")
                             .body(resource);
                 })
-                .orElse(ResponseEntity.notFound().build());
+                .orElseGet(() -> {
+                    log.error("DOCUMENT NOT FOUND IN DB | docId={}", id);
+                    return ResponseEntity.notFound().build();
+                });
     }
+
 
     @GetMapping("/view/{id}")
     public ResponseEntity<Resource> viewDocument(@PathVariable Long id) {
