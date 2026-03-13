@@ -2,10 +2,9 @@ package com.taskqueue.www.handler;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.taskqueue.www.dto.InvoiceData;
-import com.taskqueue.www.dto.InvoiceItem;
+//import com.taskqueue.www.dto.InvoiceData;
 import com.taskqueue.www.model.GeneratedDocument;
+import com.taskqueue.www.model.InvoiceData;
 import com.taskqueue.www.repository.GeneratedDocumentRepository;
 import com.taskqueue.www.service.PdfGeneratorService;
 import lombok.RequiredArgsConstructor;
@@ -14,9 +13,8 @@ import org.springframework.stereotype.Component;
 
 import java.io.File;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.UUID;
+import java.time.format.DateTimeFormatter;
+
 
 @Slf4j
 @Component
@@ -36,28 +34,34 @@ public class PdfTaskHandler implements TaskHandler {
     public void handle(String message) throws Exception {
 
         JsonNode root = objectMapper.readTree(message);
-
+        Long taskId = root.path("taskId").asLong();
         JsonNode dataNode = root.path("data");
 
         if (dataNode.isMissingNode() || dataNode.isNull()) {
             throw new RuntimeException("data section missing");
         }
 
-        String template = dataNode.path("template").asText(null);
-        String fileName = dataNode.path("fileName").asText(null);
+        String template = dataNode.path("template").asText("invoice");
 
         JsonNode invoiceDataNode = dataNode.path("data");
-
         if (invoiceDataNode.isMissingNode() || invoiceDataNode.isNull()) {
-            throw new RuntimeException("invoice data missing");
+            invoiceDataNode = dataNode;
         }
 
-        InvoiceData invoice =
-                objectMapper.treeToValue(invoiceDataNode, InvoiceData.class);
+        InvoiceData invoice = objectMapper.treeToValue(invoiceDataNode, InvoiceData.class);
 
-        pdfGeneratorService.generateInvoicePdf(invoice, fileName);
+        // AUTO-GENERATE invoice number and date
+        invoice.setInvoiceNumber("INV-" + System.currentTimeMillis());
+        invoice.setInvoiceDate(LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
 
-        log.info("PDF GENERATED SUCCESSFULLY → {}", fileName);
+        String fileName = dataNode.path("fileName").asText("invoice-" + invoice.getInvoiceNumber() + ".pdf");
+
+        String pdfPath = pdfGeneratorService.generateInvoicePdf(invoice, fileName);
+
+        // Save metadata
+        saveMetadata(taskId, pdfPath, template);
+
+        log.info("PDF GENERATED SUCCESSFULLY → {} (Invoice #: {})", fileName, invoice.getInvoiceNumber());
     }
 
     private void saveMetadata(Long taskId, String pdfPath, String template) {

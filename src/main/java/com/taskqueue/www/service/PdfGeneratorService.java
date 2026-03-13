@@ -5,8 +5,9 @@ import com.itextpdf.kernel.pdf.PdfWriter;
 import com.itextpdf.layout.Document;
 import com.itextpdf.layout.element.Paragraph;
 import com.itextpdf.layout.element.Table;
-import com.taskqueue.www.dto.InvoiceData;
+//import com.taskqueue.www.dto.InvoiceData;
 import com.taskqueue.www.dto.InvoiceItem;
+import com.taskqueue.www.model.InvoiceData;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -44,7 +45,7 @@ public class PdfGeneratorService {
 
             document.add(new Paragraph("INVOICE"));
             document.add(new Paragraph("Invoice No: " + invoice.getInvoiceNumber()));
-            document.add(new Paragraph("Date: " + invoice.getDate()));
+            document.add(new Paragraph("Date: " + invoice.getInvoiceDate()));
             document.add(new Paragraph("Customer: " + invoice.getCustomerName()));
             document.add(new Paragraph(" "));
 
@@ -55,7 +56,7 @@ public class PdfGeneratorService {
             table.addCell(new Paragraph("Price"));
             table.addCell(new Paragraph("Total"));
 
-            for (InvoiceItem item : invoice.getItems()) {
+            for (InvoiceData.Item item : invoice.getItems()) {
                 table.addCell(new Paragraph(item.getName()));
                 table.addCell(new Paragraph(String.valueOf(item.getQty())));
                 table.addCell(new Paragraph(String.valueOf(item.getPrice())));
@@ -65,7 +66,7 @@ public class PdfGeneratorService {
             document.add(table);
 
             document.add(new Paragraph(" "));
-            document.add(new Paragraph("Grand Total: " + invoice.getGrandTotal()));
+            document.add(new Paragraph("Grand Total: " + invoice.getTotal()));
 
             document.close();
 
